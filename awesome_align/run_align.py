@@ -22,7 +22,7 @@ import itertools
 import os
 import shutil
 import tempfile
-
+import sys
 import numpy as np
 import torch
 from tqdm import trange
@@ -199,18 +199,98 @@ def word_align(args, model: PreTrainedModel, tokenizer: PreTrainedTokenizer):
         merge_files(word_writers)
 
 
-def main():
+def batch_process_files(args, model: PreTrainedModel, tokenizer: PreTrainedTokenizer):
+    files = os.listdir(args.data_dir)
+    for file in files:
+        print(file)
+        args.data_file = args.data_dir + "/" + file
+        args.output_file = args.output_dir + "/" + file
+        word_align(args, model, tokenizer)
+
+
+def main(args):
+    
+    args.device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
+
+    # Set seed
+    set_seed(args)
+    config_class, model_class, tokenizer_class = BertConfig, BertForMaskedLM, BertTokenizer
+    if args.config_name:
+        config = config_class.from_pretrained(args.config_name, cache_dir=args.cache_dir)
+    elif args.model_name_or_path:
+        config = config_class.from_pretrained(args.model_name_or_path, cache_dir=args.cache_dir)
+    else:
+        config = config_class()
+
+    if args.tokenizer_name:
+        tokenizer = tokenizer_class.from_pretrained(args.tokenizer_name, cache_dir=args.cache_dir)
+    elif args.model_name_or_path:
+        tokenizer = tokenizer_class.from_pretrained(args.model_name_or_path, cache_dir=args.cache_dir)
+    else:
+        raise ValueError(
+            "You are instantiating a new {} tokenizer. This is not supported, but you can do it from another script, save it,"
+            "and load it from here, using --tokenizer_name".format(tokenizer_class.__name__)
+        )
+
+    modeling.PAD_ID = tokenizer.pad_token_id
+    modeling.CLS_ID = tokenizer.cls_token_id
+    modeling.SEP_ID = tokenizer.sep_token_id
+
+    if args.model_name_or_path:
+        model = model_class.from_pretrained(
+            args.model_name_or_path,
+            from_tf=bool(".ckpt" in args.model_name_or_path),
+            config=config,
+            cache_dir=args.cache_dir,
+        )
+    else:
+        model = model_class(config=config)
+
+    if args.data_dir is not None and args.data_file is not None:
+        print("ERROR: specify --data_file or --data_dir but not both!")
+        return
+    elif args.data_dir is None and args.data_file is None:
+        print("ERROR: one of --data_file or --data_dir must be provided!")
+        return
+    elif args.output_dir is not None and args.output_file is not None:
+        print("ERROR: specify --output_file or --output_dir but not both!")
+        return
+    elif args.output_dir is None and args.output_file is None:
+        print("ERROR: one of --output_file or --output_dir must be provided!")
+        return
+    if (args.data_dir is not None and args.output_dir is not None and \
+        args.data_file is None and args.output_file is None) or\
+        (args.data_file is not None and args.output_file is not None and \
+        args.data_dir is None and args.output_dir is None):
+        if args.data_dir is None:
+            word_align(args, model, tokenizer)
+        else:
+            batch_process_files(args, model, tokenizer)
+    else:
+        print("ERROR: specify either --data-file and --output-file or --data-dir and --output-dir!")   
+
+
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     # Required parameters
     parser.add_argument(
-        "--data_file", default=None, type=str, required=True, help="The input data file (a text file)."
+        "--data_file", default=None, type=str, required=False, help="The input data file (a text file)."
+    )
+    parser.add_argument(
+        "--data_dir", default=None, type=str, required=False, help="The input folder containing data files."
     )
     parser.add_argument(
         "--output_file",
         type=str,
-        required=True,
+        required=False,
         help="The output file."
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        required=False,
+        help="The output folder."
     )
     parser.add_argument("--align_layer", type=int, default=8, help="layer for alignment extraction")
     parser.add_argument(
@@ -254,44 +334,5 @@ def main():
     parser.add_argument("--no_cuda", action="store_true", help="Avoid using CUDA when available")
     parser.add_argument("--num_workers", type=int, default=4, help="Number of workers for data loading")
     args = parser.parse_args()
-    device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
-    args.device = device
 
-    # Set seed
-    set_seed(args)
-    config_class, model_class, tokenizer_class = BertConfig, BertForMaskedLM, BertTokenizer
-    if args.config_name:
-        config = config_class.from_pretrained(args.config_name, cache_dir=args.cache_dir)
-    elif args.model_name_or_path:
-        config = config_class.from_pretrained(args.model_name_or_path, cache_dir=args.cache_dir)
-    else:
-        config = config_class()
-
-    if args.tokenizer_name:
-        tokenizer = tokenizer_class.from_pretrained(args.tokenizer_name, cache_dir=args.cache_dir)
-    elif args.model_name_or_path:
-        tokenizer = tokenizer_class.from_pretrained(args.model_name_or_path, cache_dir=args.cache_dir)
-    else:
-        raise ValueError(
-            "You are instantiating a new {} tokenizer. This is not supported, but you can do it from another script, save it,"
-            "and load it from here, using --tokenizer_name".format(tokenizer_class.__name__)
-        )
-
-    modeling.PAD_ID = tokenizer.pad_token_id
-    modeling.CLS_ID = tokenizer.cls_token_id
-    modeling.SEP_ID = tokenizer.sep_token_id
-
-    if args.model_name_or_path:
-        model = model_class.from_pretrained(
-            args.model_name_or_path,
-            from_tf=bool(".ckpt" in args.model_name_or_path),
-            config=config,
-            cache_dir=args.cache_dir,
-        )
-    else:
-        model = model_class(config=config)
-
-    word_align(args, model, tokenizer)
-
-if __name__ == "__main__":
-    main()
+    main(args)
